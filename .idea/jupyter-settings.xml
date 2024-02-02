@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="JupyterPersistentConnectionParameters">
+    <option name="knownRemoteServers">
+      <list>
+        <JupyterConnectionParameters>
+          <option name="authType" value="notebook" />
+          <option name="token" value="a3a64d4c7899150f646b825b39b5bdf0810e8a12b2f5e21d" />
+          <option name="urlString" value="http://localhost:8000/" />
+          <authParams2>
+            <map>
+              <entry key="token" value="a3a64d4c7899150f646b825b39b5bdf0810e8a12b2f5e21d" />
+            </map>
+          </authParams2>
+        </JupyterConnectionParameters>
+        <JupyterConnectionParameters>
+          <option name="authType" value="notebook" />
+          <option name="token" value="b78c33d0cc1640f90d7c1d090e6835eadb3cfce38eca2534" />
+          <option name="urlString" value="http://localhost:8888/" />
+          <authParams2>
+            <map>
+              <entry key="token" value="b78c33d0cc1640f90d7c1d090e6835eadb3cfce38eca2534" />
+            </map>
+          </authParams2>
+        </JupyterConnectionParameters>
+        <JupyterConnectionParameters>
+          <option name="authType" value="notebook" />
+          <option name="token" value="2028c60a598cbc68058a31af8bc7daf9ebac02f5a51fd5b6" />
+          <option name="urlString" value="http://node1-ccn2cluster.stanford.edu:9035/" />
+          <authParams2>
+            <map>
+              <entry key="token" value="2028c60a598cbc68058a31af8bc7daf9ebac02f5a51fd5b6" />
+            </map>
+          </authParams2>
+        </JupyterConnectionParameters>
+      </list>
+    </option>
+    <option name="moduleParameters">
+      <map>
+        <entry key="$PROJECT_DIR$/../Ego4d/.idea/Ego4d.iml">
+          <value>
+            <JupyterConnectionParameters>
+              <option name="authType" value="notebook" />
+              <option name="token" value="2028c60a598cbc68058a31af8bc7daf9ebac02f5a51fd5b6" />
+              <option name="urlString" value="http://node1-ccn2cluster.stanford.edu:9035/" />
+              <authParams2>
+                <map>
+                  <entry key="token" value="2028c60a598cbc68058a31af8bc7daf9ebac02f5a51fd5b6" />
+                </map>
+              </authParams2>
+            </JupyterConnectionParameters>
+          </value>
+        </entry>
+        <entry key="$PROJECT_DIR$/../benchmark_jax_pytorch/.idea/benchmark_jax_pytorch.iml">
+          <value>
+            <JupyterConnectionParameters>
+              <option name="authType" value="notebook" />
+              <option name="token" value="a3a64d4c7899150f646b825b39b5bdf0810e8a12b2f5e21d" />
+              <option name="urlString" value="http://localhost:8000/" />
+              <authParams2>
+                <map>
+                  <entry key="token" value="a3a64d4c7899150f646b825b39b5bdf0810e8a12b2f5e21d" />
+                </map>
+              </authParams2>
+            </JupyterConnectionParameters>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>

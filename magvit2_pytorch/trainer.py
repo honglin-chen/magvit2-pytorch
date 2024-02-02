@@ -1,7 +1,7 @@
 from pathlib import Path
 from functools import partial
 from contextlib import contextmanager, nullcontext
-
+import os
 import torch
 from torch import nn
 from torch.nn import Module
@@ -74,9 +74,10 @@ class VideoTokenizerTrainer:
         dataset_type: VideosOrImagesLiteral = 'videos',
         checkpoints_folder = './checkpoints',
         results_folder = './results',
+        exp_name = 'exp',
         random_split_seed = 42,
         valid_frac = 0.05,
-        validate_every_step = 100,
+        validate_every_step = 200,
         checkpoint_every_step = 100,
         num_frames = 17,
         use_wandb_tracking = False,
@@ -89,10 +90,12 @@ class VideoTokenizerTrainer:
         optimizer_kwargs: dict = dict(),
         dataset_kwargs: dict = dict()
     ):
+        exp_name = f'{exp_name}_bs{batch_size}_acc{grad_accum_every}'
         self.use_wandb_tracking = use_wandb_tracking
 
         if use_wandb_tracking:
             accelerate_kwargs['log_with'] = 'wandb'
+
 
         if 'kwargs_handlers' not in accelerate_kwargs:
             accelerate_kwargs['kwargs_handlers'] = [DEFAULT_DDP_KWARGS]
@@ -101,9 +104,15 @@ class VideoTokenizerTrainer:
 
         self.accelerator = Accelerator(**accelerate_kwargs)
 
+        if use_wandb_tracking:
+            self.accelerator.init_trackers(project_name="magvit2", init_kwargs={"wandb":{"name":exp_name}})
+
         # model and exponentially moving averaged model
 
         self.model = model
+
+        total_params = sum(p.numel() for p in self.model.parameters()) / 1e6
+        print(f'Total Parameters: {total_params:.2f}M')
 
         if self.is_main:
             self.ema_model = EMA(
@@ -143,10 +152,10 @@ class VideoTokenizerTrainer:
         # dataset and dataloader
 
         self.dataset = dataset
-        self.dataloader = DataLoader(dataset, shuffle = True, drop_last = True, batch_size = batch_size)
+        self.dataloader = DataLoader(dataset, shuffle = True, drop_last = True, batch_size = batch_size, num_workers = 8)
 
         self.valid_dataset = valid_dataset
-        self.valid_dataloader = DataLoader(valid_dataset, shuffle = True, drop_last = True, batch_size = batch_size)
+        self.valid_dataloader = DataLoader(valid_dataset, shuffle = True, drop_last = True, batch_size = batch_size, num_workers = 8)
 
         self.validate_every_step = validate_every_step
         self.checkpoint_every_step = checkpoint_every_step
@@ -200,10 +209,16 @@ class VideoTokenizerTrainer:
 
         # multiscale discr losses
 
-        self.has_multiscale_discrs = self.model.has_multiscale_discrs
+        try:
+            self.has_multiscale_discrs = self.model.module.has_multiscale_discrs
+            self.multiscale_discrs = self.model.module.multiscale_discrs
+        except:
+            self.has_multiscale_discrs = self.model.has_multiscale_discrs
+            self.multiscale_discrs = self.model.multiscale_discrs
+
         self.multiscale_discr_optimizers = []
 
-        for ind, discr in enumerate(self.model.multiscale_discrs):
+        for ind, discr in enumerate(self.multiscale_discrs):
             multiscale_optimizer = get_optimizer(discr.parameters(), lr = learning_rate, **optimizer_kwargs)
 
             self.multiscale_discr_optimizers.append(multiscale_optimizer)
@@ -213,8 +228,8 @@ class VideoTokenizerTrainer:
 
         # checkpoints and sampled results folder
 
-        checkpoints_folder = Path(checkpoints_folder)
-        results_folder = Path(results_folder)
+        checkpoints_folder = Path(os.path.join(checkpoints_folder, exp_name))
+        results_folder = Path(os.path.join(results_folder, exp_name))
 
         checkpoints_folder.mkdir(parents = True, exist_ok = True)
         results_folder.mkdir(parents = True, exist_ok = True)
@@ -230,8 +245,8 @@ class VideoTokenizerTrainer:
         self.step = 0
 
         # move ema to the proper device
-
-        self.ema_model.to(self.device)
+        if self.is_main:
+            self.ema_model.to(self.device)
 
     @contextmanager
     @beartype
@@ -360,7 +375,7 @@ class VideoTokenizerTrainer:
             adversarial_gen_loss = loss_breakdown.adversarial_gen_loss.item(),
         )
 
-        self.print(f'recon loss: {loss_breakdown.recon_loss.item():.3f}')
+        self.print(f'recon loss: {loss_breakdown.recon_loss.item():.6f}')
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -423,7 +438,7 @@ class VideoTokenizerTrainer:
             self.accelerator.clip_grad_norm_(self.model.discr_parameters(), self.max_grad_norm)
 
             if self.has_multiscale_discrs:
-                for multiscale_discr in self.model.multiscale_discrs:
+                for multiscale_discr in self.multiscale_discrs:
                     self.accelerator.clip_grad_norm_(multiscale_discr.parameters(), self.max_grad_norm)
 
         self.discr_optimizer.step()
@@ -447,7 +462,8 @@ class VideoTokenizerTrainer:
         save_recons = True,
         num_save_recons = 1
     ):
-        self.ema_model.eval()
+        # if self.is_main:
+        #     self.ema_model.eval()
 
         recon_loss = 0.
         ema_recon_loss = 0.
@@ -460,8 +476,8 @@ class VideoTokenizerTrainer:
             valid_video = valid_video.to(self.device)
 
             with self.accelerator.autocast():
-                loss, _ = self.model(valid_video, return_recon_loss_only = True)
-                ema_loss, ema_recon_video = self.ema_model(valid_video, return_recon_loss_only = True)
+                loss, recon_video = torch.tensor(0.), self.model(valid_video, return_recon_loss_only = False)
+                ema_loss, ema_recon_video = loss, recon_video #self.ema_model(valid_video, return_recon_loss_only = True)
 
             recon_loss += loss / self.grad_accum_every
             ema_recon_loss += ema_loss / self.grad_accum_every
@@ -470,7 +486,7 @@ class VideoTokenizerTrainer:
                 valid_video = rearrange(valid_video, 'b c h w -> b c 1 h w')
 
             valid_videos.append(valid_video.cpu())
-            recon_videos.append(ema_recon_video.cpu())
+            recon_videos.append(recon_video.cpu())
 
         self.log(
             valid_recon_loss = recon_loss.item(),
@@ -494,7 +510,9 @@ class VideoTokenizerTrainer:
 
         validate_step = self.step // self.validate_every_step
 
-        sample_path = str(self.results_folder / f'sampled.{validate_step}.gif')
+        device_id = str(self.device).split('cuda:')[-1]
+
+        sample_path = os.path.join(self.results_folder, f'sampled.{validate_step}.{device_id}.gif')
 
         video_tensor_to_gif(real_and_recon, str(sample_path))
 
@@ -514,16 +532,16 @@ class VideoTokenizerTrainer:
 
             self.wait()
 
-            if self.is_main and not (step % self.validate_every_step):
+            if not (step % self.validate_every_step):
                 self.valid_step(valid_dl_iter)
 
-            self.wait()
+            # self.wait()
 
             if self.is_main and not (step % self.checkpoint_every_step):
                 checkpoint_num = step // self.checkpoint_every_step
                 checkpoint_path = self.checkpoints_folder / f'checkpoint.{checkpoint_num}.pt'
                 self.save(str(checkpoint_path))
 
-            self.wait()
+            # self.wait()
 
             step += 1

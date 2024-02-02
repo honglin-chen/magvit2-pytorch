@@ -34,6 +34,8 @@ from kornia.filters import filter3d
 
 import pickle
 
+import matplotlib.pyplot as plt
+
 # helper
 
 def exists(v):
@@ -817,7 +819,7 @@ class SpatialUpsample2x(Module):
 
         self.net = nn.Sequential(
             conv,
-            nn.SiLU(),
+            nn.ELU(),
             Rearrange('b (c p1 p2) h w -> b c (h p1) (w p2)', p1 = 2, p2 = 2)
         )
 
@@ -854,7 +856,7 @@ class TimeUpsample2x(Module):
 
         self.net = nn.Sequential(
             conv,
-            nn.SiLU(),
+            nn.ELU(),
             Rearrange('b (c p) t -> b c (t p)', p = 2)
         )
 
@@ -935,7 +937,7 @@ def ResidualUnit(
         nn.ELU(),
         nn.Conv3d(dim, dim, 1),
         nn.ELU(),
-        SqueezeExcite(dim)
+        # SqueezeExcite(dim) #FIXME: remove squeeze excite
     )
 
     return Residual(net)
@@ -1432,6 +1434,28 @@ class VideoTokenizer(Module):
             multiscale_adversarial_loss_weight > 0. and \
             len(multiscale_discrs) > 0
         )
+        # # fixme
+        # breakpoint()
+        # self.encoder_layers = nn.Sequential(
+        #     nn.Conv3d(64, 16, kernel_size=3, stride=1, padding=1),
+        #     #nn.MaxPool2d(kernel_size=2, stride=2),
+        #     nn.GELU(),
+        #     nn.Conv3d(16, 32, kernel_size=3, stride=1, padding=1),
+        #     #nn.MaxPool2d(kernel_size=2, stride=2),
+        #     # In general norm layers are commonly used in Resnet-based encoder/decoders
+        #     # explicitly add one here with affine=False to avoid introducing new parameters
+        #     nn.GroupNorm(4, 32, affine=False),
+        #     nn.Conv3d(32, 10, kernel_size=1),
+        # )
+
+        # self.decoder_layers = nn.Sequential(
+        #     nn.Conv3d(64, 32, kernel_size=3, stride=1, padding=1),
+        #     #nn.Upsample(scale_factor=2, mode="nearest"),
+        #     nn.Conv3d(32, 16, kernel_size=3, stride=1, padding=1),
+        #     nn.GELU(),
+        #     #nn.Upsample(scale_factor=2, mode="nearest"),
+        #     nn.Conv3d(16, 64, kernel_size=3, stride=1, padding=1),
+        # )
 
     @property
     def device(self):
@@ -1695,7 +1719,10 @@ class VideoTokenizer(Module):
             aux_losses = self.zero
             quantizer_loss_breakdown = None
         else:
-            (quantized, codes, aux_losses), quantizer_loss_breakdown = self.quantizers(x, return_loss_breakdown = True)
+            # (quantized, codes, aux_losses), quantizer_loss_breakdown = self.quantizers(x, return_loss_breakdown = True)
+            quantized = x
+            aux_losses = self.zero
+            quantizer_loss_breakdown = None
 
         if return_codes and not return_recon:
             return codes
@@ -1713,6 +1740,19 @@ class VideoTokenizer(Module):
             return recon_video
 
         recon_loss = F.mse_loss(video, recon_video)
+
+        # fig, axs = plt.subplots(1, 3, figsize=(4, 2))
+        # axs = axs[None]
+        # err_map = ((video - recon_video) ** 2).mean(1)
+        # for i in range(1):
+        #     axs[i, 0].imshow(video[i,:, -1].permute(1,2,0).detach().cpu().numpy())
+        #     axs[i, 1].imshow(recon_video[i, :, -1].permute(1, 2, 0).detach().cpu().numpy())
+        #     axs[i, 2].imshow(err_map[i, -1].detach().cpu().numpy(), cmap='coolwarm')
+        # for ax in axs:
+        #     for a in ax:
+        #         a.set_axis_off()
+        # print('video', video.min(), video.max(), recon_video.min(), recon_video.max())
+        # plt.show()
 
         # for validation, only return recon loss
 

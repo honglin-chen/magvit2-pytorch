@@ -161,7 +161,8 @@ def gif_to_tensor(
 def video_to_tensor(
     path: str,              # Path of the video to be imported
     num_frames = -1,        # Number of frames to be stored in the output tensor
-    crop_size = None
+    transform = T.ToTensor()
+
 ) -> Tensor:                # shape (1, channels, frames, height, width)
 
     video = cv2.VideoCapture(path)
@@ -175,8 +176,11 @@ def video_to_tensor(
         if not check:
             continue
 
-        if exists(crop_size):
-            frame = crop_center(frame, *pair(crop_size))
+        frame_pil = Image.fromarray(frame)
+        frame_pil = transform(frame_pil)
+        frame = np.array(frame_pil)
+        # if exists(crop_size):
+            # frame = crop_center(frame, *pair(crop_size))
 
         frames.append(rearrange(frame, '... -> 1 ...'))
 
@@ -260,9 +264,11 @@ class VideoDataset(Dataset):
         # functions to transform video path to tensor
 
         self.gif_to_tensor = partial(gif_to_tensor, channels = self.channels, transform = self.transform)
-        self.mp4_to_tensor = partial(video_to_tensor, crop_size = self.image_size)
+        self.mp4_to_tensor = partial(video_to_tensor, transform = self.transform)
 
         self.cast_num_frames_fn = partial(cast_num_frames, frames = num_frames) if force_num_frames else identity
+
+        self.default_tensor = None
 
     def __len__(self):
         return len(self.paths)
@@ -274,10 +280,15 @@ class VideoDataset(Dataset):
 
         if ext == '.gif':
             tensor = self.gif_to_tensor(path_str)
+
         elif ext == '.mp4':
-            tensor = self.mp4_to_tensor(path_str)
-            frames = tensor.unbind(dim = 1)
-            tensor = torch.stack([*map(self.transform, frames)], dim = 1)
+            try:
+                tensor = self.mp4_to_tensor(path_str)
+                frames = tensor.unbind(dim = 1)
+                tensor = torch.stack([*map(self.transform, frames)], dim = 1)
+                self.default_tensor = tensor
+            except Exception as e:
+                tensor = self.default_tensor
         else:
             raise ValueError(f'unknown extension {ext}')
 
