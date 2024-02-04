@@ -9,6 +9,13 @@
           </advancedOptions>
         </fileTransfer>
       </webServer>
+      <webServer id="e8c7a38b-4b05-41ab-984d-be25312f8648" name="node1-ccn2">
+        <fileTransfer accessType="SFTP" host="node1-ccn2cluster.stanford.edu" port="22" sshConfigId="c4d92e30-db32-460a-a37c-e75affbdc970" sshConfig="node1-ccn2">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
     </option>
   </component>
 </project>

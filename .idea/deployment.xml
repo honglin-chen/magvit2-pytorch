@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="node11-ccn2" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="node1-ccn2" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
+      <paths name="node1-ccn2">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/ccn2/u/honglinc/dev/magvit2-pytorch/" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="node11-ccn2">
         <serverdata>
           <mappings>
-            <mapping deploy="/ccn2/u/honglinc/dev/magvit2-pytorch" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/ccn2/u/honglinc/dev/magvit2-pytorch/" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

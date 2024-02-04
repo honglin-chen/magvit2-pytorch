@@ -31,16 +31,18 @@ tokenizer = VideoTokenizer(
 
 trainer = VideoTokenizerTrainer(
     tokenizer,
-    dataset_folder = '/ccn2/dataset/kinetics400/Kinetics400/k400/train/',     # folder of either videos or images, depending on setting below
-    #dataset_folder = '/ccn2/u/honglinc/datasets/temp',
+    #dataset_folder = '/ccn2/dataset/kinetics400/Kinetics400/k400/train/',     # folder of either videos or images, depending on setting below
+    dataset_folder = '/ccn2/u/honglinc/datasets/imagenet/train',
     dataset_type = 'images',                        # 'videos' or 'images', prior papers have shown pretraining on images to be effective for video synthesis
-    batch_size = 12,
-    grad_accum_every = 4,
+    batch_size = 180,
+    grad_accum_every = 1,
     learning_rate = 2e-3,
     num_train_steps = 100_000,
-    warmup_steps = 100,
-    use_wandb_tracking = False,
-    exp_name = 'compress_space_only_k400_lr2e-3',
+    warmup_steps = 200,
+    use_wandb_tracking = True,
+    valid_frac=0.0002,
+    checkpoint_every_step = 1000,
+    exp_name = 'imagenet_vanilla' #'compress_space_only_k400_lr2e-2',
 )
 
 trainer.train()

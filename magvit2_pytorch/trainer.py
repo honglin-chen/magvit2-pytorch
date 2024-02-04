@@ -8,7 +8,7 @@ from torch.nn import Module
 from torch.utils.data import Dataset, random_split
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 import pytorch_warmup as warmup
-
+from glob import glob
 from beartype import beartype
 from beartype.typing import Optional, Literal, Union, Type
 
@@ -88,7 +88,8 @@ class VideoTokenizerTrainer:
         accelerate_kwargs: dict = dict(),
         ema_kwargs: dict = dict(),
         optimizer_kwargs: dict = dict(),
-        dataset_kwargs: dict = dict()
+        dataset_kwargs: dict = dict(),
+        auto_resume: bool = True,
     ):
         exp_name = f'{exp_name}_bs{batch_size}_acc{grad_accum_every}'
         self.use_wandb_tracking = use_wandb_tracking
@@ -161,7 +162,6 @@ class VideoTokenizerTrainer:
         self.checkpoint_every_step = checkpoint_every_step
 
         # optimizers
-
         self.optimizer = get_optimizer(model.parameters(), lr = learning_rate, **optimizer_kwargs)
         self.discr_optimizer = get_optimizer(model.discr_parameters(), lr = learning_rate, **optimizer_kwargs)
 
@@ -190,7 +190,6 @@ class VideoTokenizerTrainer:
         self.apply_gradient_penalty_every = apply_gradient_penalty_every
 
         # prepare for maybe distributed
-
         (
             self.model,
             self.dataloader,
@@ -247,6 +246,14 @@ class VideoTokenizerTrainer:
         # move ema to the proper device
         if self.is_main:
             self.ema_model.to(self.device)
+
+        if auto_resume and self.is_main:
+            latest_checkpoint = max(glob(os.path.join(checkpoints_folder, '*.pt')), key = os.path.getctime, default = None)
+
+            if latest_checkpoint is not None:
+                print('Auto-resume from latest checkpoint:', latest_checkpoint)
+
+                self.load(latest_checkpoint)
 
     @contextmanager
     @beartype
@@ -375,7 +382,7 @@ class VideoTokenizerTrainer:
             adversarial_gen_loss = loss_breakdown.adversarial_gen_loss.item(),
         )
 
-        self.print(f'recon loss: {loss_breakdown.recon_loss.item():.6f}')
+        self.print(f"step {step}, lr {self.optimizer.param_groups[0]['lr']:.6f}, recon loss: {loss_breakdown.recon_loss.item():.6f}")
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -476,7 +483,7 @@ class VideoTokenizerTrainer:
             valid_video = valid_video.to(self.device)
 
             with self.accelerator.autocast():
-                loss, recon_video = torch.tensor(0.), self.model(valid_video, return_recon_loss_only = False)
+                loss, recon_video = self.model(valid_video, return_recon_loss_only = True)
                 ema_loss, ema_recon_video = loss, recon_video #self.ema_model(valid_video, return_recon_loss_only = True)
 
             recon_loss += loss / self.grad_accum_every
@@ -526,7 +533,7 @@ class VideoTokenizerTrainer:
         valid_dl_iter = cycle(self.valid_dataloader)
 
         while step < self.num_train_steps:
-            self.print(f'step {step}')
+
 
             self.train_step(dl_iter)
 

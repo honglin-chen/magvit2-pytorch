@@ -1694,9 +1694,7 @@ class VideoTokenizer(Module):
         assert video_or_images.shape[-2:] == (self.image_size, self.image_size)
 
         # accept images for image pretraining (curriculum learning from images to video)
-
         is_image = video_or_images.ndim == 4
-
         if is_image:
             video = rearrange(video_or_images, 'b c ... -> b c 1 ...')
             video_contains_first_frame = True
@@ -1708,7 +1706,6 @@ class VideoTokenizer(Module):
         assert divisible_by(frames - int(video_contains_first_frame), self.time_downsample_factor), f'number of frames {frames} minus the first frame ({frames - int(video_contains_first_frame)}) must be divisible by the total downsample factor across time {self.time_downsample_factor}'
 
         # encoder
-
         x = self.encode(video, cond = cond, video_contains_first_frame = video_contains_first_frame)
 
         # lookup free quantization

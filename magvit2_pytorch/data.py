@@ -1,11 +1,11 @@
 from pathlib import Path
 from functools import partial
-
+import os
 import torch
 from torch import Tensor
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader as PytorchDataLoader
-
+import glob
 import cv2
 from PIL import Image
 from torchvision import transforms as T, utils
@@ -88,7 +88,9 @@ class ImageDataset(Dataset):
         self.image_size = image_size
 
         exts = exts + [ext.upper() for ext in exts]
-        self.paths = [p for ext in exts for p in folder.glob(f'**/*.{ext}')]
+        self.paths = []
+        for ext in exts:
+            self.paths += glob.glob(os.path.join(folder, f'**/*.{ext}'))
 
         print(f'{len(self.paths)} training samples found at {folder}')
 
