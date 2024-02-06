@@ -12,22 +12,19 @@ tokenizer = VideoTokenizer(
     layers = (
         'residual',
         'compress_space',
-        ('consecutive_residual', 4),
+        'residual',
         'compress_space',
-        ('consecutive_residual', 4),
-        #'linear_attend_space',
+        'residual',
         'compress_space',
-        ('consecutive_residual', 4),
-        #'attend_space',
-        #'compress_time',
-        ('consecutive_residual', 2),
-        #'compress_time',
-        ('consecutive_residual', 2),
-        #'attend_time',
+        'residual',
+        'residual',
+        'residual',
+
     ),
+    channel_multiplier=[1, 2, 4, 8],
     input_conv_kernel_size=(3, 3, 3),
     use_gan = False,
-    quantizer_aux_loss_weight=1e-4,
+    quantizer_aux_loss_weight=1e-3,
     # lfq_entropy_loss_weight = 1,
     # lfq_commitment_loss_weight = 1000.,
     # lfq_diversity_gamma = 1,
@@ -42,13 +39,13 @@ trainer = VideoTokenizerTrainer(
     dataset_type = 'images',                        # 'videos' or 'images', prior papers have shown pretraining on images to be effective for video synthesis
     batch_size = 96,
     grad_accum_every = 1,
-    learning_rate = 2e-3,
+    learning_rate = 2e-5,
     num_train_steps = 100_000,
     warmup_steps = 1000,
     use_wandb_tracking = True,
     valid_frac=0.0,
     checkpoint_every_step = 1000,
-    exp_name = 'imagenet_quantize_aux_1e-4'
+    exp_name = 'imagenet_quantize_v3_aux1e-3_lr2e-5'
 )
 
 trainer.train()

@@ -10,6 +10,7 @@ from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 import pytorch_warmup as warmup
 from glob import glob
 from beartype import beartype
+from transformers import get_scheduler
 from beartype.typing import Optional, Literal, Union, Type
 
 from magvit2_pytorch.optimizer import get_optimizer
@@ -163,23 +164,25 @@ class VideoTokenizerTrainer:
         self.validate_every_step = validate_every_step
         self.checkpoint_every_step = checkpoint_every_step
 
-        # optimizers
+        # optimizerss
         self.optimizer = get_optimizer(model.parameters(), lr = learning_rate, **optimizer_kwargs)
         self.discr_optimizer = get_optimizer(model.discr_parameters(), lr = learning_rate, **optimizer_kwargs)
 
-        # warmup
+        # learning rate scheduler
 
-        self.warmup = warmup.LinearWarmup(self.optimizer, warmup_period = warmup_steps)
-        self.discr_warmup = warmup.LinearWarmup(self.discr_optimizer, warmup_period = warmup_steps)
+        self.scheduler = get_scheduler(
+            name='linear',
+            optimizer=self.optimizer,
+            num_warmup_steps=warmup_steps * self.accelerator.num_processes,
+            num_training_steps=num_train_steps * self.accelerator.num_processes,
+        )
 
-        # schedulers
-
-        if exists(scheduler):
-            self.scheduler = scheduler(self.optimizer, **scheduler_kwargs)
-            self.discr_scheduler = scheduler(self.discr_optimizer, **scheduler_kwargs)
-        else:
-            self.scheduler = ConstantLRScheduler(self.optimizer)
-            self.discr_scheduler = ConstantLRScheduler(self.discr_optimizer)
+        self.discr_scheduler = get_scheduler(
+            name='linear',
+            optimizer=self.discr_optimizer,
+            num_warmup_steps=warmup_steps * self.accelerator.num_processes,
+            num_training_steps=num_train_steps * self.accelerator.num_processes,
+        )
 
         # training related params
 
@@ -196,12 +199,16 @@ class VideoTokenizerTrainer:
             self.model,
             self.dataloader,
             self.optimizer,
-            self.discr_optimizer
+            self.discr_optimizer,
+            self.scheduler,
+            self.discr_scheduler
         ) = self.accelerator.prepare(
             self.model,
             self.dataloader,
             self.optimizer,
-            self.discr_optimizer
+            self.discr_optimizer,
+            self.scheduler,
+            self.discr_scheduler
         )
 
         # only use adversarial training after a certain number of steps
@@ -312,9 +319,9 @@ class VideoTokenizerTrainer:
             ema_model = self.ema_model.state_dict(),
             optimizer = self.optimizer.state_dict(),
             discr_optimizer = self.discr_optimizer.state_dict(),
-            warmup = self.warmup.state_dict(),
+            # warmup = self.warmup.state_dict(),
             scheduler = self.scheduler.state_dict(),
-            discr_warmup = self.discr_warmup.state_dict(),
+            # discr_warmup = self.discr_warmup.state_dict(),
             discr_scheduler = self.discr_scheduler.state_dict(),
             step = self.step
         )
@@ -334,9 +341,9 @@ class VideoTokenizerTrainer:
         self.ema_model.load_state_dict(pkg['ema_model'])
         self.optimizer.load_state_dict(pkg['optimizer'])
         self.discr_optimizer.load_state_dict(pkg['discr_optimizer'])
-        self.warmup.load_state_dict(pkg['warmup'])
+        # self.warmup.load_state_dict(pkg['warmup'])
         self.scheduler.load_state_dict(pkg['scheduler'])
-        self.discr_warmup.load_state_dict(pkg['discr_warmup'])
+        # self.discr_warmup.load_state_dict(pkg['discr_warmup'])
         self.discr_scheduler.load_state_dict(pkg['discr_scheduler'])
 
         for ind, opt in enumerate(self.multiscale_discr_optimizers):
@@ -380,20 +387,33 @@ class VideoTokenizerTrainer:
         self.log(
             total_loss = loss.item(),
             recon_loss = loss_breakdown.recon_loss.item(),
-            perceptual_loss = loss_breakdown.perceptual_loss.item(),
-            adversarial_gen_loss = loss_breakdown.adversarial_gen_loss.item(),
+            lfq_aux_loss = loss_breakdown.lfq_aux_loss.item(),
+            per_sample_entropy = loss_breakdown.quantizer_loss_breakdown.per_sample_entropy.item(),
+            commitment = loss_breakdown.quantizer_loss_breakdown.commitment.item(),
+            batch_entropy = loss_breakdown.quantizer_loss_breakdown.batch_entropy.item(),
+            perceptual_loss=loss_breakdown.perceptual_loss.item(),
+            adversarial_gen_loss=loss_breakdown.adversarial_gen_loss.item(),
+            lr = self.optimizer.param_groups[1]['lr']
         )
 
-        self.print(f"step {step}, lr {self.optimizer.param_groups[1]['lr']:.6f}, recon loss: {loss_breakdown.recon_loss.item():.6f}")
+        self.print(
+            f"step: {step}, "
+            f"lr: {self.optimizer.param_groups[1]['lr']:.7f}, "
+            f"total: {loss.item():.5f}, "
+            f"recon: {loss_breakdown.recon_loss.item():.5f}, "
+            f"lfq_aux: {loss_breakdown.lfq_aux_loss.item():.5f}, "
+            f"perceptual: {loss_breakdown.perceptual_loss.item():.5f}, "
+            f"sample_entropy: {loss_breakdown.quantizer_loss_breakdown.per_sample_entropy.item():.5f}, "
+            f"commitment: {loss_breakdown.quantizer_loss_breakdown.commitment.item():.5f}, "
+            f"batch_entropy: {loss_breakdown.quantizer_loss_breakdown.batch_entropy.item():.5f}"
+        )
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
         self.optimizer.step()
+        self.scheduler.step()
 
-        if not self.accelerator.optimizer_step_was_skipped:
-            with self.warmup.dampening():
-                self.scheduler.step()
 
         # update ema model
 

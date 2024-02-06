@@ -2,7 +2,7 @@ import copy
 from pathlib import Path
 from math import log2, ceil, sqrt
 from functools import wraps, partial
-
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
@@ -171,6 +171,30 @@ class Residual(Module):
 
     def forward(self, x, **kwargs):
         return self.fn(x, **kwargs) + x
+
+class ResBlock(Module):
+    def __init__(
+        self,
+        dim,
+        kernel_size: Union[int, Tuple[int, int, int]],
+        norm_fn = partial(nn.GroupNorm, num_groups = 8),
+        activation_fn = nn.SiLU(),
+        pad_mode = 'replicate'
+    ):
+        super().__init__()
+        self.net = nn.Sequential(
+            norm_fn(num_channels = dim),
+            activation_fn,
+            CausalConv3d(dim, dim, kernel_size, pad_mode = pad_mode),
+            norm_fn(num_channels = dim),
+            activation_fn,
+            CausalConv3d(dim, dim, kernel_size, pad_mode = pad_mode),
+        )
+    def forward(self, x):
+        residual = x
+        x = self.net(x)
+        return x + residual
+
 
 # for a bunch of tensor operations to change tensor to (batch, time, feature dimension) and back
 
@@ -758,13 +782,13 @@ class SpatialDownsample2x(Module):
         self,
         dim,
         dim_out = None,
-        kernel_size = 3,
+        kernel_size = 4,
         antialias = False
     ):
         super().__init__()
         dim_out = default(dim_out, dim)
         self.maybe_blur = Blur() if antialias else identity
-        self.conv = nn.Conv2d(dim, dim_out, kernel_size, stride = 2, padding = kernel_size // 2)
+        self.conv = nn.Conv2d(dim, dim_out, kernel_size, stride = 2, padding = kernel_size // 2 - 1)
 
     def forward(self, x):
         x = self.maybe_blur(x, space_only = True)
@@ -895,7 +919,7 @@ class CausalConv3d(Module):
         chan_in,
         chan_out,
         kernel_size: Union[int, Tuple[int, int, int]],
-        pad_mode = 'constant',
+        pad_mode = 'replicate',
         **kwargs
     ):
         super().__init__()
@@ -921,8 +945,7 @@ class CausalConv3d(Module):
         self.conv = nn.Conv3d(chan_in, chan_out, kernel_size, stride = stride, dilation = dilation, **kwargs)
 
     def forward(self, x):
-        pad_mode = self.pad_mode if self.time_pad < x.shape[2] else 'constant'
-        pad_mode = 'replicate'
+        pad_mode = self.pad_mode #if self.time_pad < x.shape[2] else 'constant'
         x = F.pad(x, self.time_causal_padding, mode = pad_mode)
         return self.conv(x)
 
@@ -1085,7 +1108,8 @@ class VideoTokenizer(Module):
         grad_penalty_loss_weight = 10.,
         multiscale_adversarial_loss_weight = 1.,
         flash_attn = True,
-        separate_first_frame_encoding = False
+        separate_first_frame_encoding = False,
+        channel_multiplier = None
     ):
         super().__init__()
 
@@ -1130,19 +1154,29 @@ class VideoTokenizer(Module):
         time_downsample_factor = 1
         has_cond_across_layers = []
 
-        for layer_def in layers:
+        module = ResBlock
+        base_dim = dim
+
+        for i, layer_def in enumerate(layers):
+
+            if channel_multiplier is not None:
+                if (i // 2) < len(channel_multiplier):
+                    dim = base_dim * channel_multiplier[i // 2]
+                else:
+                    dim = base_dim * channel_multiplier[-1]
+
             layer_type, *layer_params = cast_tuple(layer_def)
 
             has_cond = False
 
             if layer_type == 'residual':
-                encoder_layer = ResidualUnit(dim, residual_conv_kernel_size)
-                decoder_layer = ResidualUnit(dim, residual_conv_kernel_size)
+                encoder_layer = module(dim, residual_conv_kernel_size)
+                decoder_layer = module(dim, residual_conv_kernel_size)
 
             elif layer_type == 'consecutive_residual':
                 num_consecutive, = layer_params
-                encoder_layer = Sequential(*[ResidualUnit(dim, residual_conv_kernel_size) for _ in range(num_consecutive)])
-                decoder_layer = Sequential(*[ResidualUnit(dim, residual_conv_kernel_size) for _ in range(num_consecutive)])
+                encoder_layer = Sequential(*[module(dim, residual_conv_kernel_size) for _ in range(num_consecutive)])
+                decoder_layer = Sequential(*[module(dim, residual_conv_kernel_size) for _ in range(num_consecutive)])
 
             elif layer_type == 'cond_residual':
                 assert exists(dim_cond), 'dim_cond must be passed into VideoTokenizer, if tokenizer is to be conditioned'
@@ -1154,9 +1188,10 @@ class VideoTokenizer(Module):
                 dim_out = dim
 
             elif layer_type == 'compress_space':
-                dim_out = safe_get_index(layer_params, 0)
-                dim_out = default(dim_out, dim * 2)
-                dim_out = min(dim_out, max_dim)
+                # dim_out = safe_get_index(layer_params, 0)
+                # dim_out = default(dim_out, dim * 2)
+                # dim_out = min(dim_out, max_dim)
+                dim_out = base_dim * channel_multiplier[i // 2 + 1]
 
                 encoder_layer = SpatialDownsample2x(dim, dim_out)
                 decoder_layer = SpatialUpsample2x(dim_out, dim)
@@ -1311,15 +1346,30 @@ class VideoTokenizer(Module):
             self.encoder_layers.append(encoder_layer)
             self.decoder_layers.insert(0, decoder_layer)
 
-            dim = dim_out
+            # dim = dim_out
             has_cond_across_layers.append(has_cond)
 
         # add a final norm just before quantization layer
 
+        #
+        #     Rearrange('b c ... -> b ... c'),
+        #     nn.LayerNorm(dim),
+        #     Rearrange('b ... c -> b c ...'),
+        # ))
+        embed_dim = int(np.log2(codebook_size) * num_codebooks)
+
         self.encoder_layers.append(Sequential(
-            Rearrange('b c ... -> b ... c'),
-            nn.LayerNorm(dim),
-            Rearrange('b ... c -> b c ...'),
+            nn.GroupNorm(8, dim),
+            nn.SiLU(),
+            nn.Conv3d(dim, embed_dim, kernel_size = 1, stride = 1),
+        ))
+        has_cond_across_layers.append(has_cond)
+
+
+        self.decoder_layers.insert(0, Sequential(
+            nn.Conv3d(embed_dim, dim, kernel_size=1, stride=1),
+            nn.SiLU(),
+            nn.GroupNorm(8, dim),
         ))
 
         self.time_downsample_factor = time_downsample_factor
@@ -1359,7 +1409,7 @@ class VideoTokenizer(Module):
             # each codebook will get its own entropy regularization
 
             self.quantizers = LFQ(
-                dim = dim,
+                dim = embed_dim,
                 codebook_size = codebook_size,
                 num_codebooks = num_codebooks,
                 entropy_loss_weight = lfq_entropy_loss_weight,
@@ -1435,28 +1485,7 @@ class VideoTokenizer(Module):
             multiscale_adversarial_loss_weight > 0. and \
             len(multiscale_discrs) > 0
         )
-        # # fixme
-        # breakpoint()
-        # self.encoder_layers = nn.Sequential(
-        #     nn.Conv3d(64, 16, kernel_size=3, stride=1, padding=1),
-        #     #nn.MaxPool2d(kernel_size=2, stride=2),
-        #     nn.GELU(),
-        #     nn.Conv3d(16, 32, kernel_size=3, stride=1, padding=1),
-        #     #nn.MaxPool2d(kernel_size=2, stride=2),
-        #     # In general norm layers are commonly used in Resnet-based encoder/decoders
-        #     # explicitly add one here with affine=False to avoid introducing new parameters
-        #     nn.GroupNorm(4, 32, affine=False),
-        #     nn.Conv3d(32, 10, kernel_size=1),
-        # )
 
-        # self.decoder_layers = nn.Sequential(
-        #     nn.Conv3d(64, 32, kernel_size=3, stride=1, padding=1),
-        #     #nn.Upsample(scale_factor=2, mode="nearest"),
-        #     nn.Conv3d(32, 16, kernel_size=3, stride=1, padding=1),
-        #     nn.GELU(),
-        #     #nn.Upsample(scale_factor=2, mode="nearest"),
-        #     nn.Conv3d(16, 64, kernel_size=3, stride=1, padding=1),
-        # )
 
     @property
     def device(self):
@@ -1589,6 +1618,7 @@ class VideoTokenizer(Module):
 
             video = fn(video, **layer_kwargs)
 
+
         maybe_quantize = identity if not quantize else self.quantizers
 
         return maybe_quantize(video)
@@ -1707,7 +1737,6 @@ class VideoTokenizer(Module):
         assert divisible_by(frames - int(video_contains_first_frame), self.time_downsample_factor), f'number of frames {frames} minus the first frame ({frames - int(video_contains_first_frame)}) must be divisible by the total downsample factor across time {self.time_downsample_factor}'
 
         # encoder
-
         x = self.encode(video, cond = cond, video_contains_first_frame = video_contains_first_frame)
 
         # lookup free quantization
@@ -1719,9 +1748,6 @@ class VideoTokenizer(Module):
             quantizer_loss_breakdown = None
         else:
             (quantized, codes, aux_losses), quantizer_loss_breakdown = self.quantizers(x, return_loss_breakdown = True)
-            # quantized = x
-            # aux_losses = self.zero
-            # quantizer_loss_breakdown = None
 
         if return_codes and not return_recon:
             return codes
