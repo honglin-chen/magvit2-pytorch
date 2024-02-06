@@ -77,7 +77,7 @@ class VideoTokenizerTrainer:
         exp_name = 'exp',
         random_split_seed = 42,
         valid_frac = 0.05,
-        validate_every_step = 200,
+        validate_every_step = 100,
         checkpoint_every_step = 100,
         num_frames = 17,
         use_wandb_tracking = False,
@@ -141,8 +141,10 @@ class VideoTokenizerTrainer:
         assert 0 <= valid_frac < 1.
 
         if valid_frac > 0:
-            train_size = int((1 - valid_frac) * len(dataset))
-            valid_size = len(dataset) - train_size
+            # train_size = int((1 - valid_frac) * len(dataset))
+            # valid_size = len(dataset) - train_size
+            train_size = len(dataset) - 8
+            valid_size = 8
             dataset, valid_dataset = random_split(dataset, [train_size, valid_size], generator = torch.Generator().manual_seed(random_split_seed))
 
             self.print(f'training with dataset of {len(dataset)} samples and validating with randomly splitted {len(valid_dataset)} samples')
@@ -382,7 +384,7 @@ class VideoTokenizerTrainer:
             adversarial_gen_loss = loss_breakdown.adversarial_gen_loss.item(),
         )
 
-        self.print(f"step {step}, lr {self.optimizer.param_groups[0]['lr']:.6f}, recon loss: {loss_breakdown.recon_loss.item():.6f}")
+        self.print(f"step {step}, lr {self.optimizer.param_groups[1]['lr']:.6f}, recon loss: {loss_breakdown.recon_loss.item():.6f}")
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -544,7 +546,7 @@ class VideoTokenizerTrainer:
 
             # self.wait()
 
-            if self.is_main and not (step % self.checkpoint_every_step):
+            if self.is_main and not ((step + 1) % self.checkpoint_every_step):
                 checkpoint_num = step // self.checkpoint_every_step
                 checkpoint_path = self.checkpoints_folder / f'checkpoint.{checkpoint_num}.pt'
                 self.save(str(checkpoint_path))

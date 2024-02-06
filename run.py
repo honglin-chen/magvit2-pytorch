@@ -8,15 +8,16 @@ tokenizer = VideoTokenizer(
     init_dim = 64,
     max_dim = 512,
     codebook_size = 1024,
+    num_codebooks = 2,
     layers = (
         'residual',
         'compress_space',
-        ('consecutive_residual', 2),
+        ('consecutive_residual', 4),
         'compress_space',
-        ('consecutive_residual', 2),
+        ('consecutive_residual', 4),
         #'linear_attend_space',
         'compress_space',
-        ('consecutive_residual', 2),
+        ('consecutive_residual', 4),
         #'attend_space',
         #'compress_time',
         ('consecutive_residual', 2),
@@ -24,8 +25,12 @@ tokenizer = VideoTokenizer(
         ('consecutive_residual', 2),
         #'attend_time',
     ),
+    input_conv_kernel_size=(3, 3, 3),
     use_gan = False,
-    quantizer_aux_loss_weight=0.00,
+    quantizer_aux_loss_weight=1e-4,
+    # lfq_entropy_loss_weight = 1,
+    # lfq_commitment_loss_weight = 1000.,
+    # lfq_diversity_gamma = 1,
     perceptual_loss_weight=0.00,
 )
 
@@ -33,16 +38,17 @@ trainer = VideoTokenizerTrainer(
     tokenizer,
     #dataset_folder = '/ccn2/dataset/kinetics400/Kinetics400/k400/train/',     # folder of either videos or images, depending on setting below
     dataset_folder = '/ccn2/u/honglinc/datasets/imagenet/train',
+    #dataset_folder = '/ccn2/u/honglinc/datasets/bridge_v2/demo/bridge_data_v1/berkeley/toykitchen2/close_fridge/2022-04-22_12-49-14/raw/traj_group0/traj16',
     dataset_type = 'images',                        # 'videos' or 'images', prior papers have shown pretraining on images to be effective for video synthesis
-    batch_size = 180,
+    batch_size = 96,
     grad_accum_every = 1,
     learning_rate = 2e-3,
     num_train_steps = 100_000,
-    warmup_steps = 200,
+    warmup_steps = 1000,
     use_wandb_tracking = True,
-    valid_frac=0.0002,
+    valid_frac=0.0,
     checkpoint_every_step = 1000,
-    exp_name = 'imagenet_vanilla' #'compress_space_only_k400_lr2e-2',
+    exp_name = 'imagenet_quantize_aux_1e-4'
 )
 
 trainer.train()

@@ -922,7 +922,7 @@ class CausalConv3d(Module):
 
     def forward(self, x):
         pad_mode = self.pad_mode if self.time_pad < x.shape[2] else 'constant'
-
+        pad_mode = 'replicate'
         x = F.pad(x, self.time_causal_padding, mode = pad_mode)
         return self.conv(x)
 
@@ -1364,7 +1364,8 @@ class VideoTokenizer(Module):
                 num_codebooks = num_codebooks,
                 entropy_loss_weight = lfq_entropy_loss_weight,
                 commitment_loss_weight = lfq_commitment_loss_weight,
-                diversity_gamma = lfq_diversity_gamma
+                diversity_gamma = lfq_diversity_gamma,
+
             )
 
         else:
@@ -1706,6 +1707,7 @@ class VideoTokenizer(Module):
         assert divisible_by(frames - int(video_contains_first_frame), self.time_downsample_factor), f'number of frames {frames} minus the first frame ({frames - int(video_contains_first_frame)}) must be divisible by the total downsample factor across time {self.time_downsample_factor}'
 
         # encoder
+
         x = self.encode(video, cond = cond, video_contains_first_frame = video_contains_first_frame)
 
         # lookup free quantization
@@ -1716,10 +1718,10 @@ class VideoTokenizer(Module):
             aux_losses = self.zero
             quantizer_loss_breakdown = None
         else:
-            # (quantized, codes, aux_losses), quantizer_loss_breakdown = self.quantizers(x, return_loss_breakdown = True)
-            quantized = x
-            aux_losses = self.zero
-            quantizer_loss_breakdown = None
+            (quantized, codes, aux_losses), quantizer_loss_breakdown = self.quantizers(x, return_loss_breakdown = True)
+            # quantized = x
+            # aux_losses = self.zero
+            # quantizer_loss_breakdown = None
 
         if return_codes and not return_recon:
             return codes
