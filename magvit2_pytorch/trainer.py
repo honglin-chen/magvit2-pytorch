@@ -28,7 +28,7 @@ from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 
 from einops import rearrange
-
+import lpips
 from ema_pytorch import EMA
 
 from pytorch_custom_utils import auto_unwrap_model
@@ -72,6 +72,7 @@ class VideoTokenizerTrainer:
         max_grad_norm: Optional[float] = None,
         dataset: Optional[Dataset] = None,
         dataset_folder: Optional[str] = None,
+        valid_dataset_folder: Optional[str] = None,
         dataset_type: VideosOrImagesLiteral = 'videos',
         checkpoints_folder = './checkpoints',
         results_folder = './results',
@@ -92,7 +93,7 @@ class VideoTokenizerTrainer:
         dataset_kwargs: dict = dict(),
         auto_resume: bool = True,
     ):
-        exp_name = f'{exp_name}_bs{batch_size}_acc{grad_accum_every}'
+        exp_name = f'{exp_name}_bs{batch_size}_ac{grad_accum_every}'
         self.use_wandb_tracking = use_wandb_tracking
 
         if use_wandb_tracking:
@@ -141,7 +142,7 @@ class VideoTokenizerTrainer:
 
         assert 0 <= valid_frac < 1.
 
-        if valid_frac > 0:
+        if valid_dataset_folder is None:
             # train_size = int((1 - valid_frac) * len(dataset))
             # valid_size = len(dataset) - train_size
             train_size = len(dataset) - 8
@@ -150,16 +151,16 @@ class VideoTokenizerTrainer:
 
             self.print(f'training with dataset of {len(dataset)} samples and validating with randomly splitted {len(valid_dataset)} samples')
         else:
-            valid_dataset = dataset
-            self.print(f'training with shared training and valid dataset of {len(dataset)} samples')
+            valid_dataset = dataset_klass(valid_dataset_folder, image_size = model.image_size, **dataset_kwargs)
+            self.print(f'training valid dataset of {len(dataset)} samples')
 
         # dataset and dataloader
 
         self.dataset = dataset
-        self.dataloader = DataLoader(dataset, shuffle = True, drop_last = True, batch_size = batch_size, num_workers = 8)
+        self.dataloader = DataLoader(dataset, shuffle = True, drop_last = True, batch_size = batch_size, num_workers = 4)
 
         self.valid_dataset = valid_dataset
-        self.valid_dataloader = DataLoader(valid_dataset, shuffle = True, drop_last = True, batch_size = batch_size, num_workers = 8)
+        self.valid_dataloader = DataLoader(valid_dataset, shuffle = False, drop_last = True, batch_size = batch_size, num_workers = 4)
 
         self.validate_every_step = validate_every_step
         self.checkpoint_every_step = checkpoint_every_step
@@ -198,6 +199,7 @@ class VideoTokenizerTrainer:
         (
             self.model,
             self.dataloader,
+            self.valid_dataloader,
             self.optimizer,
             self.discr_optimizer,
             self.scheduler,
@@ -205,6 +207,7 @@ class VideoTokenizerTrainer:
         ) = self.accelerator.prepare(
             self.model,
             self.dataloader,
+            self.valid_dataloader,
             self.optimizer,
             self.discr_optimizer,
             self.scheduler,
@@ -256,14 +259,14 @@ class VideoTokenizerTrainer:
         if self.is_main:
             self.ema_model.to(self.device)
 
-        if auto_resume and self.is_main:
+        if auto_resume:
             latest_checkpoint = max(glob(os.path.join(checkpoints_folder, '*.pt')), key = os.path.getctime, default = None)
 
             if latest_checkpoint is not None:
                 print('Auto-resume from latest checkpoint:', latest_checkpoint)
-
                 self.load(latest_checkpoint)
 
+        self.lpips_fn = lpips.LPIPS(net='alex').to(self.device)
     @contextmanager
     @beartype
     def trackers(
@@ -335,16 +338,18 @@ class VideoTokenizerTrainer:
         path = Path(path)
         assert path.exists()
 
-        pkg = torch.load(str(path))
+        pkg = torch.load(str(path), map_location='cpu')
 
         self.model.load_state_dict(pkg['model'])
-        self.ema_model.load_state_dict(pkg['ema_model'])
         self.optimizer.load_state_dict(pkg['optimizer'])
         self.discr_optimizer.load_state_dict(pkg['discr_optimizer'])
         # self.warmup.load_state_dict(pkg['warmup'])
         self.scheduler.load_state_dict(pkg['scheduler'])
         # self.discr_warmup.load_state_dict(pkg['discr_warmup'])
         self.discr_scheduler.load_state_dict(pkg['discr_scheduler'])
+
+        if self.is_main:
+            self.ema_model.load_state_dict(pkg['ema_model'])
 
         for ind, opt in enumerate(self.multiscale_discr_optimizers):
             opt.load_state_dict(pkg[f'multiscale_discr_optimizer_{ind}'])
@@ -396,17 +401,7 @@ class VideoTokenizerTrainer:
             lr = self.optimizer.param_groups[1]['lr']
         )
 
-        self.print(
-            f"step: {step}, "
-            f"lr: {self.optimizer.param_groups[1]['lr']:.7f}, "
-            f"total: {loss.item():.5f}, "
-            f"recon: {loss_breakdown.recon_loss.item():.5f}, "
-            f"lfq_aux: {loss_breakdown.lfq_aux_loss.item():.5f}, "
-            f"perceptual: {loss_breakdown.perceptual_loss.item():.5f}, "
-            f"sample_entropy: {loss_breakdown.quantizer_loss_breakdown.per_sample_entropy.item():.5f}, "
-            f"commitment: {loss_breakdown.quantizer_loss_breakdown.commitment.item():.5f}, "
-            f"batch_entropy: {loss_breakdown.quantizer_loss_breakdown.batch_entropy.item():.5f}"
-        )
+
 
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -461,8 +456,6 @@ class VideoTokenizerTrainer:
         if apply_gradient_penalty:
             self.log(gradient_penalty = discr_loss_breakdown.gradient_penalty.item())
 
-        self.print(f'discr loss: {discr_loss_breakdown.discr_loss.item():.3f}')
-
         if exists(self.max_grad_norm):
             self.accelerator.clip_grad_norm_(self.model.discr_parameters(), self.max_grad_norm)
 
@@ -471,10 +464,20 @@ class VideoTokenizerTrainer:
                     self.accelerator.clip_grad_norm_(multiscale_discr.parameters(), self.max_grad_norm)
 
         self.discr_optimizer.step()
+        self.discr_scheduler.step()
 
-        if not self.accelerator.optimizer_step_was_skipped:
-            with self.discr_warmup.dampening():
-                self.discr_optimizer.step()
+        self.print(
+            f"step: {step}, "
+            f"lr: {self.optimizer.param_groups[1]['lr']:.7f}, "
+            f"total: {loss.item():.5f}, "
+            f"recon: {loss_breakdown.recon_loss.item():.5f}, "
+            f"distr: {discr_loss_breakdown.discr_loss.item():.5f},"
+            f"lfq_aux: {loss_breakdown.lfq_aux_loss.item():.5f}, "
+            f"perceptual: {loss_breakdown.perceptual_loss.item():.5f}, "
+            f"sample_entropy: {loss_breakdown.quantizer_loss_breakdown.per_sample_entropy.item():.5f}, "
+            f"commitment: {loss_breakdown.quantizer_loss_breakdown.commitment.item():.5f}, "
+            f"batch_entropy: {loss_breakdown.quantizer_loss_breakdown.batch_entropy.item():.5f}"
+        )
 
         if self.has_multiscale_discrs:
             for multiscale_discr_optimizer in self.multiscale_discr_optimizers:
@@ -496,11 +499,14 @@ class VideoTokenizerTrainer:
 
         recon_loss = 0.
         ema_recon_loss = 0.
+        lpips = 0.
+        num_steps = 0
 
         valid_videos = []
         recon_videos = []
 
-        for _ in range(self.grad_accum_every):
+        for _ in range(len(self.valid_dataloader)):
+
             valid_video, = next(dl_iter)
             valid_video = valid_video.to(self.device)
 
@@ -508,22 +514,39 @@ class VideoTokenizerTrainer:
                 loss, recon_video = self.model(valid_video, return_recon_loss_only = True)
                 ema_loss, ema_recon_video = loss, recon_video #self.ema_model(valid_video, return_recon_loss_only = True)
 
-            recon_loss += loss / self.grad_accum_every
-            ema_recon_loss += ema_loss / self.grad_accum_every
+            recon_loss += loss
+            ema_recon_loss += ema_loss
+
+            # Compute LPIPS
+
 
             if valid_video.ndim == 4:
                 valid_video = rearrange(valid_video, 'b c h w -> b c 1 h w')
 
+            lpips += self.lpips_fn(
+                (recon_video * 2 - 1).permute(0, 2, 1, 3, 4).flatten(0, 1),
+                (valid_video * 2 - 1).permute(0, 2, 1, 3, 4).flatten(0, 1)
+            ).mean()
+
             valid_videos.append(valid_video.cpu())
             recon_videos.append(recon_video.cpu())
+            num_steps += 1
+
+
+        recon_loss /= num_steps
+        ema_recon_loss /= num_steps
+        lpips /= num_steps
+
 
         self.log(
             valid_recon_loss = recon_loss.item(),
-            valid_ema_recon_loss = ema_recon_loss.item()
+            valid_ema_recon_loss = ema_recon_loss.item(),
+            valid_lpips = lpips.item()
         )
 
         self.print(f'validation recon loss {recon_loss:.3f}')
         self.print(f'validation EMA recon loss {ema_recon_loss:.3f}')
+        self.print(f'validation lpips {lpips:.3f}')
 
         if not save_recons:
             return

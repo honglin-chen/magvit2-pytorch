@@ -1160,8 +1160,8 @@ class VideoTokenizer(Module):
         for i, layer_def in enumerate(layers):
 
             if channel_multiplier is not None:
-                if (i // 2) < len(channel_multiplier):
-                    dim = base_dim * channel_multiplier[i // 2]
+                if (i // 5) < len(channel_multiplier):
+                    dim = base_dim * channel_multiplier[i // 5]
                 else:
                     dim = base_dim * channel_multiplier[-1]
 
@@ -1191,7 +1191,7 @@ class VideoTokenizer(Module):
                 # dim_out = safe_get_index(layer_params, 0)
                 # dim_out = default(dim_out, dim * 2)
                 # dim_out = min(dim_out, max_dim)
-                dim_out = base_dim * channel_multiplier[i // 2 + 1]
+                dim_out = base_dim * channel_multiplier[i // 5 + 1]
 
                 encoder_layer = SpatialDownsample2x(dim, dim_out)
                 decoder_layer = SpatialUpsample2x(dim_out, dim)

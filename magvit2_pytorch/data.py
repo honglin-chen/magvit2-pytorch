@@ -90,7 +90,7 @@ class ImageDataset(Dataset):
         exts = exts + [ext.upper() for ext in exts]
         self.paths = []
         for ext in exts:
-            self.paths += glob.glob(os.path.join(folder, f'**/*.{ext}'))
+            self.paths += glob.glob(os.path.join(folder, f'**/*.{ext}'), recursive=True)
 
         print(f'{len(self.paths)} training samples found at {folder}')
 
